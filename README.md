@@ -1,5 +1,8 @@
 # docchat — Chat With Your Docs
 
+[![ci](https://github.com/elaz48/grounded-docchat/actions/workflows/ci.yml/badge.svg)](https://github.com/elaz48/grounded-docchat/actions/workflows/ci.yml)
+
+
 Upload documents, ask questions, get grounded answers with citations.
 Built for the Newpage AI-Native Builder assignment (Option 1).
 

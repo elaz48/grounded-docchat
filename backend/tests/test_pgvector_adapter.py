@@ -130,3 +130,134 @@ def test_search_wraps_the_query_vector_too():
     store.search("refund", [0.1, 0.2], k=2)
     _, params = pool.cursor.calls[0]
     assert isinstance(params["qvec"], Vector)
+
+
+# --- `where` -> SQL predicates (M2) -------------------------------------
+#
+# The point of these is structural: the predicates must sit *inside* the vec
+# and kw CTEs, above their LIMIT, so filtering happens before the top-k cut.
+# Filtering after the cut silently under-returns - see
+# test_retrieval_contract.py for that failure mode stated as behaviour.
+
+
+def _cte_bodies(sql: str) -> tuple[str, str]:
+    """The vec and kw CTE bodies, each truncated at its LIMIT.
+
+    Anything found in here is applied before the top-k cut; anything applied
+    after would appear past the LIMIT, in the outer SELECT.
+    """
+    vec, _, rest = sql.partition("kw AS (")
+    kw, _, _ = rest.partition("LIMIT %(pool)s")
+    return vec.partition("LIMIT %(pool)s")[0], kw
+
+
+def _searched_sql(where: dict | None) -> tuple[str, dict]:
+    store, pool = _store()
+    store.search("refund", [0.5, 0.25], k=3, where=where)
+    sql, params = pool.cursor.calls[0]
+    return sql, params
+
+
+def test_no_filter_leaves_the_query_unpredicated():
+    sql, params = _searched_sql(None)
+    assert "document_id =" not in sql
+    assert "@>" not in sql
+    assert not [key for key in params if key.startswith("f_")]
+
+
+def test_empty_where_is_the_same_query_as_no_where():
+    assert _searched_sql({})[0] == _searched_sql(None)[0]
+
+
+def test_document_id_filters_inside_both_ctes_before_the_top_k_cut():
+    sql, params = _searched_sql({"document_id": "d1"})
+    vec, kw = _cte_bodies(sql)
+    assert "document_id = %(f_document_id)s" in vec
+    assert "document_id = %(f_document_id)s" in kw
+    assert params["f_document_id"] == "d1"
+
+
+def test_document_id_uses_the_column_not_the_jsonb_blob():
+    """chunks.document_id is an indexed column (db/init.sql); metadata is not."""
+    sql, _ = _searched_sql({"document_id": "d1"})
+    assert "@>" not in sql
+
+
+def test_metadata_keys_filter_inside_both_ctes_by_containment():
+    sql, params = _searched_sql({"source": "policy.pdf"})
+    vec, kw = _cte_bodies(sql)
+    assert "metadata @> %(f_metadata)s::jsonb" in vec
+    assert "metadata @> %(f_metadata)s::jsonb" in kw
+    assert isinstance(params["f_metadata"], Json)
+    assert params["f_metadata"].obj == {"source": "policy.pdf"}
+
+
+def test_document_id_and_metadata_combine():
+    sql, params = _searched_sql({"document_id": "d1", "source": "policy.pdf"})
+    vec, kw = _cte_bodies(sql)
+    for body in (vec, kw):
+        assert "document_id = %(f_document_id)s" in body
+        assert "metadata @> %(f_metadata)s::jsonb" in body
+    assert params["f_document_id"] == "d1"
+    assert params["f_metadata"].obj == {"source": "policy.pdf"}
+
+
+def test_kw_filter_is_anded_onto_the_existing_text_predicate():
+    """The kw CTE already has a WHERE; the filter must not replace it."""
+    _, kw = _cte_bodies(_searched_sql({"document_id": "d1"})[0])
+    assert "tsv @@ plainto_tsquery" in kw
+
+
+def test_filter_values_never_reach_the_sql_text():
+    hostile = "'; DROP TABLE chunks; --"
+    sql, params = _searched_sql({"document_id": hostile, "source": hostile})
+    assert hostile not in sql
+    assert params["f_document_id"] == hostile
+    assert params["f_metadata"].obj == {"source": hostile}
+
+
+def test_filter_keys_never_reach_the_sql_text():
+    """Metadata keys travel inside one jsonb parameter, not as identifiers."""
+    sql, params = _searched_sql({"weird key; --": "x"})
+    assert "weird key" not in sql
+    assert params["f_metadata"].obj == {"weird key; --": "x"}
+
+
+# --- the outer SELECT ---------------------------------------------------
+#
+# Repeating the predicate outside the CTEs cannot change the result set (the
+# joins already restrict it to vec/kw members), but it lets the planner use
+# chunks_document_idx instead of scanning every chunk. The risk is purely
+# syntactic: the existing outer WHERE is an OR, so an unparenthesised AND
+# would bind to the second disjunct and quietly change the query.
+
+
+def _outer(sql: str) -> str:
+    """Everything past the CTE block. `SELECT c.id` occurs only there."""
+    outer = sql.partition("\nSELECT c.id")[2]
+    assert outer, "outer SELECT not found - did the query shape change?"
+    return outer
+
+
+def test_outer_disjunction_stays_parenthesised():
+    """`A OR B AND pred` is `A OR (B AND pred)` - the bug this guards."""
+    for where in (None, {"document_id": "d1"}):
+        assert "(vec.id IS NOT NULL OR kw.id IS NOT NULL)" in _outer(_searched_sql(where)[0])
+
+
+def test_outer_select_repeats_the_filter_qualified_by_alias():
+    outer = _outer(_searched_sql({"document_id": "d1", "source": "policy.pdf"})[0])
+    assert "AND c.document_id = %(f_document_id)s" in outer
+    assert "AND c.metadata @> %(f_metadata)s::jsonb" in outer
+
+
+def test_outer_select_is_unfiltered_when_there_is_no_filter():
+    outer = _outer(_searched_sql(None)[0])
+    assert "AND c.document_id" not in outer
+    assert "@>" not in outer
+
+
+def test_outer_filter_reuses_the_cte_parameters():
+    """One bound value per filter key, however many times it appears."""
+    _, params = _searched_sql({"document_id": "d1", "source": "policy.pdf"})
+    assert sorted(k for k in params if k.startswith("f_")) == ["f_document_id", "f_metadata"]

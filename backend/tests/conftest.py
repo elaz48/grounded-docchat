@@ -45,7 +45,14 @@ class PlaceboStoreAdapter:
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
         for chunk in chunks:
-            self.fake.upsert(chunk.id, chunk.content, metadata=dict(chunk.metadata))
+            # document_id is filterable in `where` because Postgres has it as
+            # a column; the fake only knows metadata, so index it there too.
+            # Returned chunks come from self._chunks, so this stays internal.
+            self.fake.upsert(
+                chunk.id,
+                chunk.content,
+                metadata={**chunk.metadata, "document_id": chunk.document_id},
+            )
             self._chunks[chunk.id] = chunk
 
     def search(
@@ -78,15 +85,34 @@ def store(embedder: PlaceboEmbedderAdapter) -> PlaceboStoreAdapter:
     return PlaceboStoreAdapter(fake)
 
 
+SEED_CHUNKS = [
+    Chunk("c1", "d1", "Our refund policy allows returns within 30 days.",
+          {"source": "policy.pdf", "chunk_index": 0}),
+    Chunk("c2", "d1", "Refunds: how to get your money back after a purchase.",
+          {"source": "policy.pdf", "chunk_index": 1}),
+    Chunk("c3", "d2", "Delivery times and shipping costs for remote islands.",
+          {"source": "shipping.pdf", "chunk_index": 0}),
+]
+
+
+def _seed(adapter: PlaceboStoreAdapter) -> PlaceboStoreAdapter:
+    # embeddings unused by the fake; its geometry comes from the clusters
+    adapter.upsert(SEED_CHUNKS, embeddings=[[0.0]] * len(SEED_CHUNKS))
+    return adapter
+
+
 @pytest.fixture
 def seeded_store(store: PlaceboStoreAdapter) -> PlaceboStoreAdapter:
-    chunks = [
-        Chunk("c1", "d1", "Our refund policy allows returns within 30 days.",
-              {"source": "policy.pdf", "chunk_index": 0}),
-        Chunk("c2", "d1", "Refunds: how to get your money back after a purchase.",
-              {"source": "policy.pdf", "chunk_index": 1}),
-        Chunk("c3", "d2", "Delivery times and shipping costs for remote islands.",
-              {"source": "shipping.pdf", "chunk_index": 0}),
-    ]
-    store.upsert(chunks, embeddings=[[0.0]] * len(chunks))  # embeddings unused by the fake
-    return store
+    return _seed(store)
+
+
+@pytest.fixture
+def post_filter_store(embedder: PlaceboEmbedderAdapter) -> PlaceboStoreAdapter:
+    """Same data, but filtering happens *after* the top-k cut.
+
+    Stands in for the retrieval backend we deliberately did not build: it is
+    the control case in test_retrieval_contract.py that shows what
+    post-filtering costs (PLAN.md decision 13).
+    """
+    fake = FakeVectorStore(embedder=embedder.fake, profile="qdrant", filter_mode="post")
+    return _seed(PlaceboStoreAdapter(fake))

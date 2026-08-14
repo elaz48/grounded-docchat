@@ -9,7 +9,7 @@ Deadline: ASAP — target ~2 focused days. Solid basic > over-engineered
 - [x] M0 Skeleton: repo layout, ports, compose, CI, offline test suite green
 - [x] M1 Ingest: PDF/text extraction, chunking wired end to end, documents row
       persisted, upload visible in UI
-- [ ] M2 Retrieval: pgvector hybrid query finished (metadata `where` -> SQL),
+- [x] M2 Retrieval: pgvector hybrid query finished (metadata `where` -> SQL),
       manual smoke test with 2-3 real PDFs
 - [ ] M3 Generation: Claude answers with [n] citations rendered in UI,
       refusal + degrade paths verified by hand
@@ -38,6 +38,7 @@ Status: proposed = my recommendation from planning; confirm or overturn as you b
 | 10 | Document chunk count | denormalized column on documents / COUNT over chunks | COUNT over chunks | the UI wants the number, but a stored counter is a second source of truth to keep in sync — and adding the column would change db/init.sql, which is a contract | decided (M1) |
 | 11 | psycopg type adaptation | cast in SQL / wrap at the call site / register on the pool | `Json()` + `Vector()` at the call site, `register_vector` on the pool | psycopg binds neither a bare dict to JSONB nor a bare list to `vector`; both fail only against a live DB, so the wrappers are asserted in backend/tests/test_pgvector_adapter.py against a fake cursor | decided (M1) |
 | 12 | Empty/scanned upload | index an empty doc / silent 200 / 400 with a reason | `EmptyDocumentError` -> HTTP 400 | a scanned PDF is the most likely real upload failure; failing at upload with "this needs OCR" beats a document that exists but can never answer anything | decided (M1) |
+| 13 | `where` -> SQL | filter in Python after search / predicates in the outer SELECT / predicates inside both CTEs | predicates inside the vec and kw CTEs, above their `LIMIT` | both post-filter variants under-return: the CTEs have already spent their pool on non-matching rows, so "ask within this document" can come back empty while matching chunks sit one rank below the cut. `document_id` hits the indexed column, other keys use JSONB containment (`metadata @> ...`), so no caller-supplied key or value is ever interpolated into SQL | decided (M2) |
 
 Add a row every time you make a non-obvious call. This table feeds the README.
 
@@ -52,3 +53,11 @@ tooling (init.sql is fine at this scale), conversation memory across questions.
 2. `where` filter UI (ask within one document)
 3. LLM-graded answer quality in evals (behind an --llm flag)
 4. Reranker stage between retrieval and generation
+5. (M4) Render assistant messages as markdown — Claude answers in lists and
+   emphasis, and `<p>{turn.text}</p>` currently shows the raw syntax
+6. (M4) Make the inline `[n]` numbers agree with the citation chips, and
+   dedupe chips that point at the same source. Today `adapters/anthropic_llm.py`
+   maps cited block numbers to sources positionally and `App.tsx` renumbers
+   them `[j+1]` by array position, so an answer citing blocks [2] and [5]
+   renders chips [1] and [2] — and two blocks from one file render two
+   identical chips

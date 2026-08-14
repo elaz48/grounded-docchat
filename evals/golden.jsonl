@@ -1,0 +1,2 @@
+{"question": "What is the refund window?", "expect_citation": "policy.pdf", "expect_refusal": false}
+{"question": "Who won the 2022 World Cup?", "expect_citation": null, "expect_refusal": true}

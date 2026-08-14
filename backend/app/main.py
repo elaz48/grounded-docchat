@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -24,8 +24,9 @@ app.add_middleware(
 )
 
 # Wiring happens here and only here; everything below main.py sees ports.
+# One Postgres adapter serves both the VectorStore and DocumentStore ports.
 _embedder = OpenAIEmbedder(settings.openai_api_key)
-_store = PgVectorStore(settings.database_url)
+_store = PgVectorStore.from_url(settings.database_url)
 _service = RagService(
     _embedder,
     _store,
@@ -44,14 +45,28 @@ def healthz() -> dict:
     return {"ok": True}
 
 
+@app.get("/api/documents")
+def list_documents() -> dict:
+    return {
+        "documents": [
+            {"document_id": d.id, "filename": d.filename, "chunks": d.chunk_count}
+            for d in _store.list_documents()
+        ]
+    }
+
+
 @app.post("/api/documents")
 async def upload_document(file: UploadFile) -> dict:
     data = await file.read()
-    document_id, chunk_count = ingest_module.ingest(
-        file.filename or "upload", data, _embedder, _store,
-        target_chars=settings.chunk_target_chars,
-        overlap_chars=settings.chunk_overlap_chars,
-    )
+    try:
+        document_id, chunk_count = ingest_module.ingest(
+            file.filename or "upload", data, _embedder,
+            store=_store, documents=_store,  # one adapter, two ports
+            target_chars=settings.chunk_target_chars,
+            overlap_chars=settings.chunk_overlap_chars,
+        )
+    except ingest_module.EmptyDocumentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"document_id": document_id, "chunks": chunk_count}
 
 

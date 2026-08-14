@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { ask, uploadDocument } from "./api";
+import { useEffect, useRef, useState } from "react";
+import { ask, listDocuments, uploadDocument, type DocumentSummary } from "./api";
 
 interface Turn {
   role: "user" | "assistant";
@@ -12,16 +12,24 @@ export default function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
-  const [docs, setDocs] = useState<string[]>([]);
+  const [docs, setDocs] = useState<DocumentSummary[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // The document list lives in Postgres, not in this component: a reload
+  // must still show what has been ingested.
+  useEffect(() => {
+    listDocuments().then(setDocs).catch(() => setUploadError("Could not reach the API."));
+  }, []);
 
   async function onUpload(file: File) {
     setBusy(true);
+    setUploadError(null);
     try {
-      const result = await uploadDocument(file);
-      setDocs((d) => [...d, `${file.name} · ${result.chunks} chunks`]);
+      await uploadDocument(file);
+      setDocs(await listDocuments());
     } catch (err) {
-      setDocs((d) => [...d, `${file.name} · upload failed`]);
+      setUploadError(err instanceof Error ? err.message : `Could not upload ${file.name}.`);
     } finally {
       setBusy(false);
     }
@@ -62,12 +70,19 @@ export default function App() {
           type="file"
           accept=".pdf,.txt,.md"
           hidden
-          onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = ""; // allow re-picking the same file after a failure
+            if (file) onUpload(file);
+          }}
         />
+        {uploadError && <p className="empty">{uploadError}</p>}
         <ul className="doclist">
           {docs.length === 0 && <li className="empty">No documents yet. Upload one to start.</li>}
-          {docs.map((d, i) => (
-            <li key={i}>{d}</li>
+          {docs.map((d) => (
+            <li key={d.document_id}>
+              {d.filename} · {d.chunks} chunks
+            </li>
           ))}
         </ul>
       </aside>

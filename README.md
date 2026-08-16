@@ -55,15 +55,15 @@ The full decision log with alternatives considered lives in
 
 | Decision | Choice | Why (short) |
 |---|---|---|
-| LLM | Claude Sonnet | [YOUR VOICE] |
-| Embeddings | OpenAI text-embedding-3-small | [YOUR VOICE] |
-| Vector store | Postgres + pgvector | [YOUR VOICE] |
-| Retrieval | Hybrid: HNSW cosine + tsvector keyword, RRF fusion | [YOUR VOICE] |
-| Chunking | Paragraph packing, ~1200 chars, 150 overlap | [YOUR VOICE] |
+| LLM | Claude Sonnet | Good price/quality ratio, and it follows the "answer only from context" instruction and the citation format reliably. |
+| Embeddings | OpenAI text-embedding-3-small | Cheap and ubiquitous, easily good enough for this task, and swapping it later is a tested code path, so it's a low-risk choice. |
+| Vector store | Postgres + pgvector | One database serves the relational data, the vector search and the keyword search, so I operate one system instead of three, and Postgres is where I'm deepest. |
+| Retrieval | Hybrid: HNSW cosine + tsvector keyword, RRF fusion | Vector search can miss exact terms like "BERT", keyword search misses paraphrases; RRF fuses ranks instead of raw scores, so the two signals need no normalisation, and the metadata filter runs before the top-k cut in both arms. |
+| Chunking | Paragraph packing, ~1200 chars, 150 overlap | Paragraphs are natural semantic units; the overlap protects answers that span a chunk boundary, and the behaviour is simple enough to test. Semantic chunking stays in the backlog until evals justify it. |
 | Orchestration | None (plain Python service) | Three linear steps, no branching or state; my port layer is a few dozen lines I control, a framework would add surface, not value. |
-| Guardrails | Context-only system prompt + NOT_IN_CONTEXT refusal + score floor | [YOUR VOICE] |
-| Quality | Offline retrieval contract tests + golden-set evals (evals/) | [YOUR VOICE] |
-| Observability | Structured JSON logs, request IDs, latency per request | [YOUR VOICE] |
+| Guardrails | Context-only system prompt + NOT_IN_CONTEXT refusal + score floor | Three independent layers for three failure modes: the score floor catches empty relevance before the LLM call, the system prompt constrains the content, and NOT_IN_CONTEXT turns the model's own "I don't know" into an honest refusal. |
+| Quality | Offline retrieval contract tests + golden-set evals (evals/) | Two levels for two different questions: offline contract tests prove the retrieval pipeline behaves correctly (deterministic, no API keys), golden-set evals measure whether answers are good on real documents. |
+| Observability | Structured JSON logs, request IDs, latency per request | Structured JSON logs with request IDs and latency, which is enough to debug a system this size; anything heavier belongs to productionization. |
 
 ## Key technical decisions
 

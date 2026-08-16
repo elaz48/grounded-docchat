@@ -1,10 +1,9 @@
 """Claude behind the AnswerModel port: grounded answers with [n] citations."""
 from __future__ import annotations
 
-import re
-
 from anthropic import Anthropic
 
+from ..citations import normalize_citations
 from ..ports import Answer, RetrievedChunk
 
 MODEL = "claude-sonnet-4-6"
@@ -18,14 +17,18 @@ Rules:
 
 
 class ClaudeAnswerModel:
-    def __init__(self, api_key: str) -> None:
-        self._client = Anthropic(api_key=api_key)
+    def __init__(self, client: Anthropic) -> None:
+        self._client = client
+
+    @classmethod
+    def from_api_key(cls, api_key: str) -> ClaudeAnswerModel:
+        return cls(Anthropic(api_key=api_key))
 
     def answer(self, question: str, context: list[RetrievedChunk]) -> Answer:
+        sources = [hit.chunk.metadata.get("source", "unknown") for hit in context]
         blocks = "\n\n".join(
-            f"[{i + 1}] (source: {hit.chunk.metadata.get('source', 'unknown')})\n"
-            f"{hit.chunk.content}"
-            for i, hit in enumerate(context)
+            f"[{i + 1}] (source: {source})\n{hit.chunk.content}"
+            for i, (hit, source) in enumerate(zip(context, sources, strict=True))
         )
         response = self._client.messages.create(
             model=MODEL,
@@ -39,10 +42,7 @@ class ClaudeAnswerModel:
             from ..rag import REFUSAL
             return Answer(text=REFUSAL, citations=[], grounded=False)
 
-        cited = sorted({int(m) for m in re.findall(r"\[(\d+)\]", text)})
-        citations = [
-            context[i - 1].chunk.metadata.get("source", "unknown")
-            for i in cited
-            if 0 < i <= len(context)
-        ]
-        return Answer(text=text, citations=citations, grounded=True)
+        # The model cites block numbers; the UI shows citation numbers.
+        # citations.py is the one place that translates between them.
+        cited = normalize_citations(text, sources)
+        return Answer(text=cited.text, citations=cited.citations, grounded=True)

@@ -13,7 +13,7 @@ Deadline: ASAP — target ~2 focused days. Solid basic > over-engineered
       manual smoke test with 2-3 real PDFs
 - [ ] M3 Generation: Claude answers with [n] citations rendered in UI,
       refusal + degrade paths verified by hand
-- [ ] M4 UI polish: upload states, streaming-feel loading, citation chips,
+- [x] M4 UI polish: upload states, streaming-feel loading, citation chips,
       empty states with direction (see frontend/src/styles.css tokens)
 - [ ] M5 Evals: 10-15 golden questions against my own real documents,
       `python evals/run_evals.py` prints hit rate + refusal correctness
@@ -39,6 +39,9 @@ Status: proposed = my recommendation from planning; confirm or overturn as you b
 | 11 | psycopg type adaptation | cast in SQL / wrap at the call site / register on the pool | `Json()` + `Vector()` at the call site, `register_vector` on the pool | psycopg binds neither a bare dict to JSONB nor a bare list to `vector`; both fail only against a live DB, so the wrappers are asserted in backend/tests/test_pgvector_adapter.py against a fake cursor | decided (M1) |
 | 12 | Empty/scanned upload | index an empty doc / silent 200 / 400 with a reason | `EmptyDocumentError` -> HTTP 400 | a scanned PDF is the most likely real upload failure; failing at upload with "this needs OCR" beats a document that exists but can never answer anything | decided (M1) |
 | 13 | `where` -> SQL | filter in Python after search / predicates in the outer SELECT / predicates inside both CTEs | predicates inside the vec and kw CTEs, above their `LIMIT` | both post-filter variants under-return: the CTEs have already spent their pool on non-matching rows, so "ask within this document" can come back empty while matching chunks sit one rank below the cut. `document_id` hits the indexed column, other keys use JSONB containment (`metadata @> ...`), so no caller-supplied key or value is ever interpolated into SQL | decided (M2) |
+| 14 | Citation numbering | renumber in the UI / return `{n, source}` objects / rewrite the markers in the answer text | rewrite the markers, `citations` stays `list[str]` | the UI cannot renumber, because it never sees the block numbers Claude cites; structured citations would change the API, the evals and the `Answer` port to carry information the rewrite makes unnecessary. Rewriting makes `citations[j]` the source of every `[j+1]`, so chips and inline numbers cannot drift apart, and repeated sources collapse into one chip. It lives in `app/citations.py` rather than the Claude adapter: it is a property of our contract, not of the vendor, and being pure text it is asserted offline like the rest | decided (M4) |
+| 15 | `$` in answers | render as-is / turn single-dollar math off / escape currency before parsing | escape `$` when a digit follows | markdown reads `$` as math, so "over $1,200 and $3,400" parses as one formula and both amounts disappear from the answer - in a document-chat app that is a wrong answer, not a cosmetic bug. Turning single-dollar math off would instead drop the inline formulas these papers are full of. Currency is a `$` followed by a digit and a formula almost never opens on one, so escaping exactly that keeps both; code spans and fences are skipped | decided (M4) |
+| 16 | Upload progress | spinner / one bar / measured bytes then indeterminate | two phases | fetch cannot report request-body progress, so the bar needs XHR. The two waits are different in kind: sending bytes is measurable, chunking and embedding is not and is usually the longer one. A single bar would sit at 100% through the slow half, which is exactly the lie a progress bar exists to prevent | decided (M4) |
 
 Add a row every time you make a non-obvious call. This table feeds the README.
 
@@ -53,11 +56,10 @@ tooling (init.sql is fine at this scale), conversation memory across questions.
 2. `where` filter UI (ask within one document)
 3. LLM-graded answer quality in evals (behind an --llm flag)
 4. Reranker stage between retrieval and generation
-5. (M4) Render assistant messages as markdown — Claude answers in lists and
-   emphasis, and `<p>{turn.text}</p>` currently shows the raw syntax
-6. (M4) Make the inline `[n]` numbers agree with the citation chips, and
-   dedupe chips that point at the same source. Today `adapters/anthropic_llm.py`
-   maps cited block numbers to sources positionally and `App.tsx` renumbers
-   them `[j+1]` by array position, so an answer citing blocks [2] and [5]
-   renders chips [1] and [2] — and two blocks from one file render two
-   identical chips
+5. ~~(M4) Render assistant messages as markdown~~ — done in M4: react-markdown
+   + remark-gfm, with KaTeX for the formulas (decision 15)
+6. ~~(M4) Make the inline `[n]` numbers agree with the citation chips~~ — done
+   in M4: `app/citations.py` renumbers and dedupes, so `citations[j]` is the
+   source of every `[j+1]` (decision 14)
+7. Lazy-load KaTeX: it is ~300 kB of the bundle and nothing needs it until the
+   first answer arrives. Not worth the Suspense boundary at this scale

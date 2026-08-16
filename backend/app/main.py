@@ -30,7 +30,7 @@ _store = PgVectorStore.from_url(settings.database_url)
 _service = RagService(
     _embedder,
     _store,
-    ClaudeAnswerModel(settings.anthropic_api_key),
+    ClaudeAnswerModel.from_api_key(settings.anthropic_api_key),
     k=settings.retrieval_k,
     min_score=settings.grounding_min_score,
 )

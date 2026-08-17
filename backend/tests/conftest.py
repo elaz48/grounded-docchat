@@ -1,4 +1,8 @@
-"""placeborag fakes wired to the app's ports.
+"""Test doubles wired to the app's ports.
+
+placeborag backs the two retrieval ports, where the thing worth simulating is
+embedding geometry and rank order; the AnswerModel doubles are hand-rolled,
+because what the tests need from a model is an echo or an exception.
 
 This is the point of the test architecture: the retrieval contract
 (ranking, grounding, degradation) runs offline, deterministically, with no

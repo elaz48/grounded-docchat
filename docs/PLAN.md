@@ -11,7 +11,7 @@ Deadline: ASAP — target ~2 focused days. Solid basic > over-engineered
       persisted, upload visible in UI
 - [x] M2 Retrieval: pgvector hybrid query finished (metadata `where` -> SQL),
       manual smoke test with 2-3 real PDFs
-- [ ] M3 Generation: Claude answers with [n] citations rendered in UI,
+- [x] M3 Generation: Claude answers with [n] citations rendered in UI,
       refusal + degrade paths verified by hand
 - [x] M4 UI polish: upload states, streaming-feel loading, citation chips,
       empty states with direction (see frontend/src/styles.css tokens)
@@ -44,6 +44,9 @@ Status: proposed = my recommendation from planning; confirm or overturn as you b
 | 16 | Upload progress | spinner / one bar / measured bytes then indeterminate | two phases | fetch cannot report request-body progress, so the bar needs XHR. The two waits are different in kind: sending bytes is measurable, chunking and embedding is not and is usually the longer one. A single bar would sit at 100% through the slow half, which is exactly the lie a progress bar exists to prevent | decided (M4) |
 | 17 | Keyword arm query semantics | keep `plainto_tsquery` (AND) / `websearch_to_tsquery` / OR-join the parsed query's lexemes | OR-join the lexemes, keep `ts_rank_cd` for order | `plainto_tsquery` ANDs every lexeme, so a chunk must contain the whole question to match. Measured on the golden set: 11 of 12 answerable questions matched **zero** chunks, so RRF fused the vector arm with the empty set and the "hybrid" was vector-only for anything longer than a phrase. The tell is in the scores - every hit came back at exactly `1/(60+rank)`, meaning no chunk was ever in both arms. `websearch_to_tsquery` does not fix it: it adds quoting and `OR`/`-` syntax but still ANDs bare terms. The rewrite happens on the *parsed* query (`replace(plainto_tsquery(...)::text, ' & ', ' \| ')::tsquery`), so Postgres keeps doing the tokenising, stemming and stop-word removal and only the operator changes; `plainto_tsquery` never emits phrase operators, so `' & '` is the only separator to swap. OR decides membership, `ts_rank_cd` still decides rank within the arm, and the pool cut to `k*4` keeps the arm selective - matching 137-328 of 376 chunks is fine because only the top 24 reach the fusion. Also adds the statement-level `ORDER BY` the kw CTE never had: `LIMIT` without it takes an arbitrary slice, which was harmless while the arm returned 0-1 rows and is not once it returns hundreds | decided (M5) |
 | 18 | Grounding floor vs `RETRIEVAL_K` | keep the constant / derive from `RRF_K` + `RETRIEVAL_K` / drop the floor | derive it, and refuse to start on a value that would delete returnable hits | The two settings were coupled with nothing saying so. A single-arm hit scores `1/(RRF_K + rank)`, so at `K=6` the worst hit the pool can return scores `1/66 = 0.015151` and the shipped floor was `0.015` - a 0.00015 margin. At `K=7` rank 7 scores `1/67 = 0.014925` and every such hit vanishes below the same unchanged constant, with no error and no log line: raising `K` would have *reduced* recall. `single_arm_floor(k)` now derives it and main.py raises at startup if a configured value sits above it. Worth stating plainly: this makes the floor a no-op by construction, which is what the evals showed it already was - RRF scores encode *rank*, not similarity, so rank 1 scores `1/61` whether the match is perfect or worthless, and a rank-based floor cannot express "nothing relevant". Every refusal in the golden set came from the prompt guardrail (`NOT_IN_CONTEXT`), not from the floor. Decision 8 said "both"; honestly it is one. A floor on the vector arm's cosine distance would be a real second guardrail - backlog | decided (M5) |
+| 19 | Generation failures | let them 500 / reuse the retrieval degrade message / a second degrade message | second message, `DEGRADED_GENERATION` | The retrieval path degraded honestly and the generation path did not, so the LLM's most ordinary failure modes - 429, overload, timeout - reached the user as a 500 with no advice in it. Reusing the retrieval text would have been cheaper but says the wrong thing twice: retrieval succeeded, and anyone reading logs or a screenshot needs to know which half broke. The degraded answer carries no citations even though grounded hits exist: an answer nobody produced cannot cite sources, and `grounded=True` with no text would break the eval contract's meaning. Both paths now log `exc_info=True` plus the exception type - "a request degraded" without the traceback tells you nothing about which dependency did it | decided (M6) |
+| 20 | Upload endpoint concurrency | `async def` + `await file.read()` / `async def` + `run_in_threadpool` / plain `def` | plain `def`, read via `file.file` | `ingest()` is synchronous CPU and blocking I/O end to end: pypdf extraction, chunking, then an embedding HTTP call. On an `async def` handler all of it runs on the event loop, so one 40-page PDF stalls every other request in the process, health checks included. A sync `def` hands the whole handler to Starlette's threadpool, which is what FastAPI's sync path is for; `file.file` is the already-parsed spooled body, so nothing needs awaiting. Wrapping in `run_in_threadpool` from an async handler gets to the same place with more ceremony. Real fix at scale is the ingestion queue in the README's productionization section | decided (M6) |
+| 21 | Dependency versions | `>=` ranges / `==` pins on direct deps / freeze the whole working set | freeze the whole set, direct and transitive | With ranges, `docker compose build` resolved whatever was newest that day - the container ruled out the host's Python but not the version drift it was supposed to make reproducible, and CI could disagree with the image the demo ran on. `requirements.txt` is now `pip freeze` from the image that served the screenshots and the eval run, direct deps kept visible in their own block above the transitive pins. Dev tooling stays on ranges deliberately: a newer ruff or pytest failing is information, not a broken runtime | decided (M6) |
 
 Add a row every time you make a non-obvious call. This table feeds the README.
 
@@ -65,3 +68,30 @@ tooling (init.sql is fine at this scale), conversation memory across questions.
    source of every `[j+1]` (decision 14)
 7. Lazy-load KaTeX: it is ~300 kB of the bundle and nothing needs it until the
    first answer arrives. Not worth the Suspense boundary at this scale
+8. API-boundary tests with `TestClient`: the service layer is covered, the
+   HTTP contract is not - status codes, the 400 on an empty upload, the
+   response shape the frontend parses. Blocked on wiring: main.py builds the
+   adapters at import time, so importing the app needs a live DB and API keys.
+   Needs a `create_app(service, store)` factory with module-level wiring moved
+   into it, then the tests inject the same doubles conftest already has
+9. Atomic, idempotent ingest: `documents.create_document` then
+   `store.upsert` are two statements with no transaction around them, so a
+   failure between them leaves a document row with zero chunks - visible in
+   the sidebar, unable to answer anything. And re-uploading the same file
+   indexes it twice under a new id, because nothing keys on content. One
+   transaction plus a content hash as the natural key fixes both
+10. Caps at the API boundary: no limit on upload size or question length. A
+    200 MB PDF is an OOM and a 50 kB question is a large embedding bill; both
+    should be rejected with a reason, not absorbed. Pairs with rate limiting
+11. Expose the `where` filter in the API: the SQL and the port already take
+    it (decision 13) and only the endpoint is missing, so "ask within this
+    document" is a request-model field plus a pass-through - the UI in
+    backlog #2 needs this first
+12. Tie-break the final `ORDER BY score DESC` in the hybrid query: RRF sums
+    tie routinely - two hits that are rank r in one arm and absent from the
+    other score identically - and Postgres may return tied rows in any order,
+    so the same question can come back with a different top-k, and the cut at
+    `LIMIT k` can drop a different chunk each run. `ORDER BY score DESC, c.id`
+    makes it deterministic, which the evals silently assume already. The vec
+    CTE wants the same treatment (`ORDER BY embedding <=> ..., id`); the kw
+    CTE already has it

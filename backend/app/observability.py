@@ -11,6 +11,12 @@ from fastapi import Request
 def configure_logging() -> None:
     structlog.configure(
         processors=[
+            # First in the chain: every log line, from any module, picks up
+            # whatever the middleware bound for this request. Without it,
+            # request_id would only appear on lines logged through the bound
+            # logger the middleware holds - which is exactly the lines that
+            # need it least.
+            structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.JSONRenderer(),
@@ -20,7 +26,11 @@ def configure_logging() -> None:
 
 async def request_context_middleware(request: Request, call_next):
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
-    log = structlog.get_logger().bind(request_id=request_id, path=request.url.path)
+    # Bound before call_next so the downstream task inherits the context;
+    # cleared first so nothing from a previous request can leak in.
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=request_id, path=request.url.path)
+    log = structlog.get_logger()
     started = time.perf_counter()
     response = await call_next(request)
     log.info(

@@ -79,8 +79,13 @@ def list_documents() -> dict:
 
 
 @app.post("/api/documents")
-async def upload_document(file: UploadFile) -> dict:
-    data = await file.read()
+def upload_document(file: UploadFile) -> dict:
+    # Deliberately sync: ingest() extracts, chunks and embeds synchronously,
+    # and on an async endpoint all of that runs on the event loop, so one
+    # upload of a large PDF stalls every other request. A sync def hands the
+    # whole handler to the threadpool instead; file.file is the already-parsed
+    # spooled body, so the read needs no await.
+    data = file.file.read()
     try:
         document_id, chunk_count = ingest_module.ingest(
             file.filename or "upload", data, _embedder,

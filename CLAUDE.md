@@ -8,8 +8,8 @@ AI-assisted development repeatable. These are the standing rules.
   get a row in the decision log in the same commit.
 - Test-first for logic: chunking, retrieval contract, and service behaviour
   are specified in backend/tests before implementation changes.
-- Run `pytest` after every change; the suite is offline and takes <1s,
-  there is no excuse to skip it.
+- Run `pytest` after every change; the suite is offline and takes a few
+  seconds, there is no excuse to skip it.
 - Run `ruff check .` before committing.
 
 ## Boundaries

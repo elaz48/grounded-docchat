@@ -17,6 +17,4 @@ frontend/.vite/
 *.tsbuildinfo
 migrate/
 docker-compose.override.yml
-migrate/
-docker-compose.override.yml
 restore.sh

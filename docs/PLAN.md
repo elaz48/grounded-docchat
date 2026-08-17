@@ -15,7 +15,7 @@ Deadline: ASAP — target ~2 focused days. Solid basic > over-engineered
       refusal + degrade paths verified by hand
 - [x] M4 UI polish: upload states, streaming-feel loading, citation chips,
       empty states with direction (see frontend/src/styles.css tokens)
-- [ ] M5 Evals: 10-15 golden questions against my own real documents,
+- [x] M5 Evals: 10-15 golden questions against my own real documents,
       `python evals/run_evals.py` prints hit rate + refusal correctness
 - [ ] M6 Ship: README rewritten in my voice, screenshots, short video,
       squash noisy commits, push, send link

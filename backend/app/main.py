@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from . import ingest as ingest_module
 from .adapters.anthropic_llm import ClaudeAnswerModel
 from .adapters.openai_embedder import OpenAIEmbedder
-from .adapters.pgvector_store import PgVectorStore
+from .adapters.pgvector_store import RRF_K, PgVectorStore, single_arm_floor
 from .config import settings
 from .observability import configure_logging, request_context_middleware
 from .rag import RagService
@@ -27,12 +27,35 @@ app.add_middleware(
 # One Postgres adapter serves both the VectorStore and DocumentStore ports.
 _embedder = OpenAIEmbedder(settings.openai_api_key)
 _store = PgVectorStore.from_url(settings.database_url)
+
+# RETRIEVAL_K and GROUNDING_MIN_SCORE are coupled, and the coupling used to
+# be invisible (PLAN.md decision 18). RRF scores a single-arm hit at
+# 1/(RRF_K + rank), so at k=6 the last hit the pool can return scores
+# 1/66 = 0.015151 - and the shipped floor was 0.015, clearing it by 0.00015.
+# Raise k to 7 and rank 7 scores 1/67 = 0.014925: every such hit disappears
+# below the same unchanged constant, silently. So derive the floor from the
+# constants it depends on, and refuse to start on a value that would delete
+# hits the retriever was asked for.
+_pool_floor = single_arm_floor(settings.retrieval_k)
+_min_score = (
+    settings.grounding_min_score
+    if "grounding_min_score" in settings.model_fields_set
+    else _pool_floor
+)
+if _min_score > _pool_floor:
+    raise RuntimeError(
+        f"GROUNDING_MIN_SCORE={_min_score} exceeds the RRF single-arm floor "
+        f"{_pool_floor:.6f} implied by RETRIEVAL_K={settings.retrieval_k}. "
+        f"Hits ranked below {int(1 / _min_score) - RRF_K} in a single arm would be "
+        "dropped after retrieval asked for them; lower the floor or lower RETRIEVAL_K."
+    )
+
 _service = RagService(
     _embedder,
     _store,
     ClaudeAnswerModel.from_api_key(settings.anthropic_api_key),
     k=settings.retrieval_k,
-    min_score=settings.grounding_min_score,
+    min_score=_min_score,
 )
 
 

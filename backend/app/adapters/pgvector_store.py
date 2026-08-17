@@ -4,6 +4,10 @@ Hybrid = HNSW cosine ranking fused with tsvector keyword ranking via
 Reciprocal Rank Fusion (RRF, k=60). Postgres gives us BM25-ish keyword
 search for free, so hybrid costs no extra service (PLAN.md decision log).
 
+The keyword arm matches on the question's lexemes OR-joined and orders them
+by ts_rank_cd: OR decides membership, cover density decides rank. AND
+membership is what made the arm fire on nothing (PLAN.md decision 17).
+
 Score convention: RRF scores, higher is better - matching the app-wide
 convention declared in ports.py.
 
@@ -25,16 +29,36 @@ from ..ports import Chunk, Document, RetrievedChunk
 
 RRF_K = 60
 
-# The `{...}_filter` slots are the only interpolated parts, and they are
-# assembled from the fixed templates in _filter_predicates() - never from
-# caller input, which travels as bound parameters. Asserted in
+# The keyword arm's tsquery (PLAN.md decision 17).
+#
+# `plainto_tsquery` ANDs every lexeme, so a question-shaped input only
+# matches a chunk that contains all of it. Measured on the golden set: 11 of
+# the 12 answerable questions matched zero chunks, which left RRF fusing the
+# vector arm with the empty set - a hybrid retriever doing vector-only
+# search, silently.
+#
+# Swapping the operator in the *parsed* query keeps Postgres in charge of
+# tokenising, stemming and stop-word removal; only conjunction becomes
+# disjunction. plainto_tsquery never emits phrase operators (that is
+# phraseto_tsquery), so ' & ' is the only separator there is to swap, and a
+# question of nothing but stop words stays an empty tsquery that matches
+# nothing, exactly as before.
+KW_TSQUERY = "replace(plainto_tsquery('english', %(qtext)s)::text, ' & ', ' | ')::tsquery"
+
+# The `{...}` slots are the only interpolated parts. `{kw_tsquery}` is the
+# module constant above; the `{...}_filter` slots are assembled from the
+# fixed templates in _filter_predicates(). Neither carries caller input,
+# which travels as bound parameters. Asserted in
 # test_pgvector_adapter.py::test_filter_values_never_reach_the_sql_text.
 #
 # The outer WHERE keeps its disjunction parenthesised: `A OR B AND pred`
 # parses as `A OR (B AND pred)`, which would quietly stop filtering the vec
 # arm. Asserted in test_outer_disjunction_stays_parenthesised.
 _HYBRID_SQL = """
-WITH vec AS (
+WITH q AS (
+    SELECT {kw_tsquery} AS tsq
+),
+vec AS (
     SELECT id, row_number() OVER (ORDER BY embedding <=> %(qvec)s::vector) AS rank
     FROM chunks
     {vec_filter}
@@ -43,10 +67,11 @@ WITH vec AS (
 ),
 kw AS (
     SELECT id, row_number() OVER (
-        ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %(qtext)s)) DESC
+        ORDER BY ts_rank_cd(tsv, q.tsq) DESC, id
     ) AS rank
-    FROM chunks
-    WHERE tsv @@ plainto_tsquery('english', %(qtext)s){kw_filter}
+    FROM chunks, q
+    WHERE tsv @@ q.tsq{kw_filter}
+    ORDER BY ts_rank_cd(tsv, q.tsq) DESC, id
     LIMIT %(pool)s
 )
 SELECT c.id, c.document_id, c.content, c.metadata,
@@ -82,6 +107,19 @@ LEFT JOIN chunks c ON c.document_id = d.id
 GROUP BY d.id, d.filename, d.created_at
 ORDER BY d.created_at DESC
 """
+
+
+def single_arm_floor(k: int) -> float:
+    """The score of the worst hit a k-sized pool can still return.
+
+    RRF scores a hit that is rank r in one arm at 1/(RRF_K + r), so the
+    thinnest thing the outer LIMIT can hand back is rank k of a single arm.
+    A grounding floor above this number does not refuse "nothing relevant" -
+    it silently deletes hits the retriever meant to return (PLAN.md decision
+    18). Exported so the wiring can derive the floor instead of hardcoding a
+    constant that only happens to be right at one value of k.
+    """
+    return 1.0 / (RRF_K + k)
 
 
 def _configure(conn: Connection) -> None:
@@ -131,11 +169,14 @@ def _hybrid_sql(predicates: list[str]) -> str:
     the planner reach chunks_document_idx instead of scanning every chunk.
     """
     if not predicates:
-        return _HYBRID_SQL.format(vec_filter="", kw_filter="", outer_filter="")
+        return _HYBRID_SQL.format(
+            kw_tsquery=KW_TSQUERY, vec_filter="", kw_filter="", outer_filter=""
+        )
 
     cte = [p.format(t="") for p in predicates]
     outer = [p.format(t="c.") for p in predicates]
     return _HYBRID_SQL.format(
+        kw_tsquery=KW_TSQUERY,
         vec_filter="WHERE " + " AND ".join(cte),
         kw_filter="".join(f"\n      AND {p}" for p in cte),
         outer_filter="".join(f"\n  AND {p}" for p in outer),

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from app.adapters.pgvector_store import PgVectorStore
+import pytest
+from app.adapters.pgvector_store import PgVectorStore, single_arm_floor
 from app.ports import Chunk
 from pgvector import Vector
 from psycopg.types.json import Json
@@ -125,6 +126,22 @@ def test_search_reports_higher_is_better_scores():
     assert hits[0].chunk.content == "Refunds within 30 days."
 
 
+def test_single_arm_floor_tracks_retrieval_k():
+    """The grounding floor is derived, not chosen (PLAN.md decision 18)."""
+    assert single_arm_floor(6) == pytest.approx(1 / 66)
+    assert single_arm_floor(7) == pytest.approx(1 / 67)
+
+
+def test_the_hardcoded_floor_was_only_ever_right_for_one_k():
+    """0.015 shipped as a constant. It sits inside a 0.00015-wide window.
+
+    At k=6 it clears the last returnable hit (1/66 = 0.015151); at k=7 that
+    hit scores 1/67 = 0.014925 and the same constant deletes it. This is the
+    trap the derivation exists to close.
+    """
+    assert single_arm_floor(6) > 0.015 > single_arm_floor(7)
+
+
 def test_search_wraps_the_query_vector_too():
     store, pool = _store()
     store.search("refund", [0.1, 0.2], k=2)
@@ -205,7 +222,7 @@ def test_document_id_and_metadata_combine():
 def test_kw_filter_is_anded_onto_the_existing_text_predicate():
     """The kw CTE already has a WHERE; the filter must not replace it."""
     _, kw = _cte_bodies(_searched_sql({"document_id": "d1"})[0])
-    assert "tsv @@ plainto_tsquery" in kw
+    assert "tsv @@ q.tsq" in kw
 
 
 def test_filter_values_never_reach_the_sql_text():

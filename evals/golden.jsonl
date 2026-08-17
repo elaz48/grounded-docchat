@@ -1,2 +1,15 @@
-{"question": "What is the refund window?", "expect_citation": "policy.pdf", "expect_refusal": false}
-{"question": "Who won the 2022 World Cup?", "expect_citation": null, "expect_refusal": true}
+{"question": "In scaled dot-product attention, what quantity are the dot products of the queries and keys divided by before the softmax is applied?", "expect_citation": "1706.03762v7.pdf", "expect_refusal": false}
+{"question": "What is the model dimension d_model and how many parallel attention heads does the base Transformer configuration use?", "expect_citation": "1706.03762v7.pdf", "expect_refusal": false}
+{"question": "Why did the authors build a sequence transduction model with no recurrence and no convolutions, and what does that buy them during training?", "expect_citation": "1706.03762v7.pdf", "expect_refusal": false}
+{"question": "If the network reads every token in parallel, how does it still know what order the words came in?", "expect_citation": "1706.03762v7.pdf", "expect_refusal": false}
+{"question": "What do the abbreviations MLM and NSP stand for in BERT's pre-training setup?", "expect_citation": "1810.04805v2.pdf", "expect_refusal": false}
+{"question": "What percentage of the WordPiece tokens in each sequence are masked at random during pre-training?", "expect_citation": "1810.04805v2.pdf", "expect_refusal": false}
+{"question": "How many layers, what hidden size, and how many self-attention heads does BERT-BASE have?", "expect_citation": "1810.04805v2.pdf", "expect_refusal": false}
+{"question": "How can a model take both the words before and the words after a position into account at the same time, when a standard language model only ever looks backwards?", "expect_citation": "1810.04805v2.pdf", "expect_refusal": false}
+{"question": "How many parameters does the largest GPT-3 model have?", "expect_citation": "2005.14165v4.pdf", "expect_refusal": false}
+{"question": "What is the difference between zero-shot, one-shot and few-shot evaluation as this work defines them?", "expect_citation": "2005.14165v4.pdf", "expect_refusal": false}
+{"question": "What context window size n_ctx were all the GPT-3 model variants trained with?", "expect_citation": "2005.14165v4.pdf", "expect_refusal": false}
+{"question": "How does the model pick up a brand-new task from a handful of demonstrations in its prompt, without anyone updating its weights?", "expect_citation": "2005.14165v4.pdf", "expect_refusal": false}
+{"question": "Who won the 2022 FIFA World Cup?", "expect_citation": null, "expect_refusal": true}
+{"question": "What is the recommended daily intake of vitamin D for adults?", "expect_citation": null, "expect_refusal": true}
+{"question": "How many parameters does Llama 3 have?", "expect_citation": null, "expect_refusal": true}

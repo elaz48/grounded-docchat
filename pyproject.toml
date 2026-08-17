@@ -2,6 +2,9 @@
 pythonpath = ["backend"]
 testpaths = ["backend/tests"]
 addopts = "-q"
+markers = [
+    "live: needs a restored corpus in Postgres; set DOCCHAT_LIVE_DB to run",
+]
 
 [tool.ruff]
 line-length = 100

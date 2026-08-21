@@ -17,8 +17,12 @@ Deadline: ASAP — target ~2 focused days. Solid basic > over-engineered
       empty states with direction (see frontend/src/styles.css tokens)
 - [x] M5 Evals: 10-15 golden questions against my own real documents,
       `python evals/run_evals.py` prints hit rate + refusal correctness
-- [ ] M6 Ship: README rewritten in my voice, screenshots, short video,
+- [x] M6 Ship: README rewritten in my voice, screenshots, short video,
       squash noisy commits, push, send link
+
+All milestones done (2026-08-21). Nothing left blocks the submission; what
+remains is the backlog below, which is deliberately unshipped and stays in
+priority order.
 
 ## Decision log
 
@@ -26,14 +30,14 @@ Status: proposed = my recommendation from planning; confirm or overturn as you b
 
 | # | Decision | Options considered | Choice | Why | Status |
 |---|---|---|---|---|---|
-| 1 | Vector store | pgvector / Chroma / Pinecone | pgvector | I know Postgres deeply; one DB for data + vectors + keyword search; JD names it | proposed |
-| 2 | Retrieval | vector-only / hybrid RRF / rerank stage | hybrid RRF | keyword search is free in Postgres; rerank is backlog | proposed |
-| 3 | Embeddings | OpenAI 3-small / Voyage / local | OpenAI 3-small | cheap, ubiquitous, 1536 dims; swap path is tested | proposed |
-| 4 | LLM | Claude Sonnet / GPT / both | Claude Sonnet | strongest grounded-answer behaviour; my daily driver | proposed |
-| 5 | Orchestration | LangGraph / LlamaIndex / none | none | linear 3-step pipeline; a framework adds surface, not value | proposed |
-| 6 | Chunking | paragraph packing / semantic / per-page | paragraph packing + overlap | explainable, testable, good enough; semantic is backlog | proposed |
+| 1 | Vector store | pgvector / Chroma / Pinecone | pgvector | I know Postgres deeply; one DB for data + vectors + keyword search; JD names it | confirmed |
+| 2 | Retrieval | vector-only / hybrid RRF / rerank stage | hybrid RRF | keyword search is free in Postgres; rerank is backlog | confirmed (M5 fixed the kw arm, decision 17) |
+| 3 | Embeddings | OpenAI 3-small / Voyage / local | OpenAI 3-small | cheap, ubiquitous, 1536 dims; swap path is tested | confirmed |
+| 4 | LLM | Claude Sonnet / GPT / both | Claude Sonnet | strongest grounded-answer behaviour; my daily driver | confirmed |
+| 5 | Orchestration | LangGraph / LlamaIndex / none | none | linear 3-step pipeline; a framework adds surface, not value | confirmed |
+| 6 | Chunking | paragraph packing / semantic / per-page | paragraph packing + overlap | explainable, testable, good enough; semantic is backlog | confirmed |
 | 7 | Retrieval testing | mock API responses / live calls / placeborag | placeborag | deterministic rank-order assertions offline; my own OSS lib | decided |
-| 8 | Guardrail | prompt-only / score floor / both | both | prompt handles content, score floor handles "nothing relevant" | proposed |
+| 8 | Guardrail | prompt-only / score floor / both | both | prompt handles content, score floor handles "nothing relevant" | revised by #18 (M5): the floor is a no-op, the prompt is the real guardrail |
 | 9 | Document registry | method on VectorStore / separate DocumentStore port / no port (SQL in ingest) | separate `DocumentStore` port | chunks.document_id is a FK, so the row must exist first; a separate port puts that ordering in `ingest()`'s signature instead of hiding it in an adapter. One Postgres class implements both ports; only main.py knows that | decided (M1) |
 | 10 | Document chunk count | denormalized column on documents / COUNT over chunks | COUNT over chunks | the UI wants the number, but a stored counter is a second source of truth to keep in sync — and adding the column would change db/init.sql, which is a contract | decided (M1) |
 | 11 | psycopg type adaptation | cast in SQL / wrap at the call site / register on the pool | `Json()` + `Vector()` at the call site, `register_vector` on the pool | psycopg binds neither a bare dict to JSONB nor a bare list to `vector`; both fail only against a live DB, so the wrappers are asserted in backend/tests/test_pgvector_adapter.py against a fake cursor | decided (M1) |

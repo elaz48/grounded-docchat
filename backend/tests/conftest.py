@@ -111,6 +111,18 @@ def seeded_store(store: PlaceboStoreAdapter) -> PlaceboStoreAdapter:
 
 
 @pytest.fixture
+def empty_store(embedder: PlaceboEmbedderAdapter) -> PlaceboStoreAdapter:
+    """An unseeded store that is *not* the one `seeded_store` seeds.
+
+    `seeded_store` seeds the `store` fixture in place and returns it, so a
+    test that asks for both gets the same, seeded, object twice. Tests that
+    need an empty store *and* a populated one in the same test use this.
+    """
+    fake = FakeVectorStore(embedder=embedder.fake, profile="qdrant", filter_mode="pre")
+    return PlaceboStoreAdapter(fake)
+
+
+@pytest.fixture
 def post_filter_store(embedder: PlaceboEmbedderAdapter) -> PlaceboStoreAdapter:
     """Same data, but filtering happens *after* the top-k cut.
 

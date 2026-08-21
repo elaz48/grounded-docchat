@@ -1,10 +1,13 @@
 """Claude behind the AnswerModel port: grounded answers with [n] citations."""
 from __future__ import annotations
 
+import structlog
 from anthropic import Anthropic
 
 from ..citations import normalize_citations
 from ..ports import Answer, RetrievedChunk
+
+log = structlog.get_logger()
 
 MODEL = "claude-sonnet-4-6"
 
@@ -40,6 +43,18 @@ class ClaudeAnswerModel:
 
         if "NOT_IN_CONTEXT" in text:
             from ..rag import REFUSAL
+
+            # Retrieval worked and the guardrail still said no, which is a
+            # retrieval-*quality* report, not a corpus one - and it reaches
+            # the user as the same string as an empty retrieval. The sources
+            # are the diagnosis: "six passages, none from the paper that
+            # answers it" is readable here or nowhere (PLAN.md decision 23).
+            log.info(
+                "refused_not_in_context",
+                question_len=len(question),
+                hits=len(context),
+                sources=list(dict.fromkeys(sources)),
+            )
             return Answer(text=REFUSAL, citations=[], grounded=False)
 
         # The model cites block numbers; the UI shows citation numbers.

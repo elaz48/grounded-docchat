@@ -8,6 +8,12 @@ The keyword arm matches on the question's lexemes OR-joined and orders them
 by ts_rank_cd: OR decides membership, cover density decides rank. AND
 membership is what made the arm fire on nothing (PLAN.md decision 17).
 
+Fusion is not plain RRF: the vector arm holds the first
+vector_reserved_slots(k) slots and the arms compete for the rest. Plain RRF
+values co-occurrence far above rank, which let the OR arm's noise evict the
+vector arm's own top hits (PLAN.md decision 22). `fuse()` is the readable
+statement of the policy; the SQL below mirrors it.
+
 Score convention: RRF scores, higher is better - matching the app-wide
 convention declared in ports.py.
 
@@ -28,6 +34,10 @@ from psycopg_pool import ConnectionPool
 from ..ports import Chunk, Document, RetrievedChunk
 
 RRF_K = 60
+
+# Each arm retrieves POOL_MULTIPLIER * k before fusion, so a chunk that only
+# one arm likes still has room to be compared against the other's.
+POOL_MULTIPLIER = 4
 
 # The keyword arm's tsquery (PLAN.md decision 17).
 #
@@ -81,9 +91,64 @@ FROM chunks c
 LEFT JOIN vec ON vec.id = c.id
 LEFT JOIN kw  ON kw.id  = c.id
 WHERE (vec.id IS NOT NULL OR kw.id IS NOT NULL){outer_filter}
-ORDER BY score DESC
+ORDER BY CASE WHEN vec.rank <= %(reserved)s THEN 0 ELSE 1 END, score DESC, c.id
 LIMIT %(k)s;
 """
+
+
+def vector_reserved_slots(k: int) -> int:
+    """How many of the k slots the vector arm is guaranteed (PLAN.md decision 22).
+
+    Half the window, rounded up. Derived from k rather than chosen, for the
+    same reason the grounding floor is: a constant that happens to be right
+    at one value of k is a trap at every other one (decision 18).
+    """
+    return -(-k // 2)
+
+
+def worst_reserved_score(k: int) -> float:
+    """The score of the thinnest hit a reserved slot can hold.
+
+    Reserved slots are vector ranks 1..vector_reserved_slots(k), so the
+    weakest of them scores 1/(RRF_K + vector_reserved_slots(k)). The grounding
+    floor must sit at or below this or retrieval guarantees a slot and
+    grounding takes it away again.
+    """
+    return 1.0 / (RRF_K + vector_reserved_slots(k))
+
+
+def fuse(vec_ranked: list[str], kw_ranked: list[str], k: int) -> list[str]:
+    """The fusion policy, in Python. `_HYBRID_SQL` mirrors it; Postgres runs it.
+
+    Both arguments are chunk ids in rank order, so rank is index + 1.
+
+    Plain RRF sums 1/(RRF_K + rank) across the arms, which makes membership
+    in *both* arms worth more than any rank difference within one: at
+    RRF_K=60 over a pool of 24 the whole rank spread is 1/61..1/84 (27%),
+    while co-occurrence adds up to another 1/61 (100%). With a keyword arm
+    that matches 62% of the corpus on OR semantics, that let noise co-hits
+    evict the vector arm's own top hits - measured, the fused window for a
+    golden question held nothing from the only paper that answered it, while
+    vector ranks 1, 2 and 3 were all from that paper (PLAN.md decision 22).
+
+    So the vector arm keeps the first `vector_reserved_slots(k)` slots and
+    the rest are fused as before. Within each tier the order is RRF score,
+    then id, so the result is deterministic.
+    """
+    vec = {chunk_id: i + 1 for i, chunk_id in enumerate(vec_ranked)}
+    kw = {chunk_id: i + 1 for i, chunk_id in enumerate(kw_ranked)}
+    reserved = set(vec_ranked[: vector_reserved_slots(k)])
+
+    def score(chunk_id: str) -> float:
+        return (1.0 / (RRF_K + vec[chunk_id]) if chunk_id in vec else 0.0) + (
+            1.0 / (RRF_K + kw[chunk_id]) if chunk_id in kw else 0.0
+        )
+
+    return sorted(
+        vec.keys() | kw.keys(),
+        key=lambda chunk_id: (chunk_id not in reserved, -score(chunk_id), chunk_id),
+    )[:k]
+
 
 _UPSERT_CHUNK_SQL = """
 INSERT INTO chunks (id, document_id, chunk_index, content, metadata, embedding)
@@ -234,9 +299,10 @@ class PgVectorStore:
                 {
                     "qvec": Vector(query_embedding),
                     "qtext": query_text,
-                    "pool": k * 4,
+                    "pool": POOL_MULTIPLIER * k,
                     "rrf_k": RRF_K,
                     "k": k,
+                    "reserved": vector_reserved_slots(k),
                     **filter_params,
                 },
             )

@@ -47,7 +47,7 @@ class RagService:
     def ask(self, question: str) -> Answer:
         try:
             query_embedding = self._embedder.embed_query(question)
-            hits = self._store.search(question, query_embedding, k=self._k)
+            retrieved = self._store.search(question, query_embedding, k=self._k)
         except Exception as exc:
             # Degrade, don't collapse: a read-path failure becomes an honest
             # "try again" instead of a 500. Covered by test_failure_paths.py.
@@ -61,8 +61,19 @@ class RagService:
             )
             return Answer(text=DEGRADED_RETRIEVAL, citations=[], grounded=False)
 
-        hits = self._grounded_hits(hits)
+        hits = self._grounded_hits(retrieved)
         if not hits:
+            # `retrieved` and `kept` separate the two bugs that reach this
+            # line. retrieved=0 is the corpus, the filter or an ingest that
+            # never ran; retrieved>0 with kept=0 is the grounding floor
+            # deleting hits the retriever was asked for - the failure mode
+            # decision 18 could only argue about because nothing logged it.
+            log.info(
+                "refused_no_hits",
+                question_len=len(question),
+                retrieved=len(retrieved),
+                kept=0,
+            )
             return Answer(text=REFUSAL, citations=[], grounded=False)
 
         try:
